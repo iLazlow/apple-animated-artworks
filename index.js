@@ -100,6 +100,32 @@ async function fetchArtworkDetails(albumUrl) {
     }
 }
 
+async function fetchByIsrc(isrc, storefront = 'us') {
+    const token = await getBearerToken(`https://music.apple.com/${storefront}`);
+    if (!token) return { error: true, apiUrl: null };
+
+    const apiUrl = `https://amp-api.music.apple.com/v1/catalog/${storefront}/songs?filter[isrc]=${encodeURIComponent(isrc)}`;
+    const headers = {
+        'Authorization': `Bearer ${token}`,
+        'Origin': 'https://music.apple.com',
+        'User-Agent': 'Mozilla/5.0'
+    };
+
+    try {
+        const res = await fetch(apiUrl, { headers });
+        const data = await res.json();
+        const song = data.data?.[0];
+
+        return {
+            albumUrl: song?.attributes?.url || null,
+            apiUrl
+        };
+    } catch (err) {
+        fastify.log.error(`ISRC lookup failed: ${err.message}`);
+        return { error: true, apiUrl };
+    }
+}
+
 // --- Endpoints ---
 
 fastify.get('/api/v1/artwork/url', async (request, reply) => {
@@ -149,7 +175,7 @@ fastify.get('/api/v1/artwork/url', async (request, reply) => {
 });
 
 fastify.get('/api/v1/artwork/search', async (request, reply) => {
-    const { artist, album, title, isrc } = request.query;
+    const { artist, album, title, isrc, country } = request.query;
     const searchKey = isrc
         ? `isrc:${isrc.toLowerCase()}`
         : `${artist?.toLowerCase()}|${album?.toLowerCase()}|${title?.toLowerCase()}`;
@@ -177,11 +203,10 @@ fastify.get('/api/v1/artwork/search', async (request, reply) => {
         let searchUrl = null;
 
         if (isrc) {
-            searchUrl = `https://itunes.apple.com/lookup?isrc=${encodeURIComponent(isrc)}&entity=song`;
-            const isrcRes = await fetch(searchUrl);
-            const { results: isrcResults } = await isrcRes.json();
-            if (isrcResults?.length) {
-                best = isrcResults[0];
+            const isrcResult = await fetchByIsrc(isrc, (country || 'us').toLowerCase());
+            searchUrl = isrcResult.apiUrl;
+            if (isrcResult.albumUrl) {
+                best = { collectionViewUrl: isrcResult.albumUrl };
             }
         }
 
