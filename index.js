@@ -149,48 +149,67 @@ fastify.get('/api/v1/artwork/url', async (request, reply) => {
 });
 
 fastify.get('/api/v1/artwork/search', async (request, reply) => {
-    const { artist, album, title } = request.query;
-    const searchKey = `${artist?.toLowerCase()}|${album?.toLowerCase()}|${title?.toLowerCase()}`;
+    const { artist, album, title, isrc } = request.query;
+    const searchKey = isrc
+        ? `isrc:${isrc.toLowerCase()}`
+        : `${artist?.toLowerCase()}|${album?.toLowerCase()}|${title?.toLowerCase()}`;
     const cached = db.prepare(getCachedQuery()).get(searchKey);
-    
+
     if (cached) {
         if (!cached.url && !cached.url_tall) {
-            return reply.code(404).send({ 
+            return reply.code(404).send({
                 message: "No animated artwork found.",
                 api_url: cached.api_url,
                 itunes_url: cached.itunes_url
             });
         }
-        return { 
+        return {
             url: cached.url,
             url_tall: cached.url_tall,
             artist: cached.artist,
             album: cached.album,
-            isCached: true 
+            isCached: true
         };
     }
 
     try {
-        const queryStr = title ? `${artist} ${album} ${title}` : `${artist} ${album}`;
-        const query = encodeURIComponent(queryStr);
-        const entity = title ? 'song' : 'album';
-        const searchUrl = `https://itunes.apple.com/search?term=${query}&entity=${entity}&limit=5&explicit=Yes`;
-        
-        const itunesRes = await fetch(searchUrl);
-        const { results } = await itunesRes.json();
+        let best = null;
+        let searchUrl = null;
 
-        if (!results.length) {
+        if (isrc) {
+            searchUrl = `https://itunes.apple.com/lookup?isrc=${encodeURIComponent(isrc)}&entity=song`;
+            const isrcRes = await fetch(searchUrl);
+            const { results: isrcResults } = await isrcRes.json();
+            if (isrcResults?.length) {
+                best = isrcResults[0];
+            }
+        }
+
+        if (!best && (artist || album)) {
+            const queryStr = title ? `${artist} ${album} ${title}` : `${artist} ${album}`;
+            const query = encodeURIComponent(queryStr);
+            const entity = title ? 'song' : 'album';
+            searchUrl = `https://itunes.apple.com/search?term=${query}&entity=${entity}&limit=5&explicit=Yes`;
+
+            const itunesRes = await fetch(searchUrl);
+            const { results } = await itunesRes.json();
+
+            if (results?.length) {
+                const albumLower = album?.toLowerCase() ?? '';
+                best = results.find(r => r.collectionName?.toLowerCase().includes(albumLower)) ?? results[0];
+            }
+        }
+
+        if (!best) {
             db.prepare("INSERT OR REPLACE INTO cache (search_key, url, url_tall, artist, album, api_url, itunes_url, timestamp) VALUES (?, NULL, NULL, NULL, NULL, NULL, ?, datetime('now'))")
               .run(searchKey, searchUrl);
-            return reply.code(404).send({ 
+            return reply.code(404).send({
                 message: "No animated artwork found.",
                 api_url: null,
                 itunes_url: searchUrl
             });
         }
 
-        const albumLower = album.toLowerCase();
-        const best = results.find(r => r.collectionName?.toLowerCase().includes(albumLower)) ?? results[0];
         const itunesUrl = best.collectionViewUrl;
 
         const details = await fetchArtworkDetails(itunesUrl);
